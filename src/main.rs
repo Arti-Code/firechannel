@@ -119,7 +119,7 @@ async fn main() -> Result<()> {
 
                 d.on_message(Box::new(move |msg: DataChannelMessage| {
                     let msg_str = String::from_utf8(msg.data.to_vec()).unwrap();
-                    println!("Message from DataChannel '{}': '{}'", d_label, msg_str);
+                    println!("'{}': '{}'", d_label, msg_str);
                     Box::pin(async {})
                 })).await;
             })
