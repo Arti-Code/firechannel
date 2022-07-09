@@ -3,19 +3,25 @@ use clap::{App, Arg, value_t};
 use tokio::time::{sleep, Duration};
 use firebase_rs::*;
 use webrtc::api::media_engine::MediaEngine;
-use clap::{AppSettings};
-use std::io::Write;
+//use clap::{AppSettings};
+//use std::io::Write;
 use std::sync::Arc;
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::APIBuilder;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::ice_transport::ice_server::RTCIceServer;
-use webrtc::interceptor::registry::{Registry, self};
+use webrtc::interceptor::registry::{Registry};
 use webrtc::peer_connection::configuration::RTCConfiguration;
-use webrtc::peer_connection::{math_rand_alpha, self};
+use webrtc::peer_connection::{math_rand_alpha};
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+use serde::{Serialize, Deserialize};
+
+#[derive(Serialize, Deserialize, Debug)]
+struct Answer {
+  answer: String
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -44,11 +50,11 @@ async fn main() -> Result<()> {
     sleep(Duration::from_secs(3)).await;
     let firebase = Firebase::new("https://rust-signal-default-rtdb.europe-west1.firebasedatabase.app")
         .unwrap()
-        .at("negotiations")
+        .at("messages")
         .at(&identify)
         .at("offer");
-    let offer = firebase.get::<String>().await;
-    println!("[OFFER]: {:?}", offer);
+    let offer_encoded = firebase.get::<String>().await;
+    println!("[OFFER]: {:?}", offer_encoded);
 
     let mut media = MediaEngine::default();
     media.register_default_codecs()?;
@@ -120,8 +126,8 @@ async fn main() -> Result<()> {
         }))
         .await;
 
-    let line = signal::must_read_stdin()?;
-    let desc_data = signal::decode(line.as_str())?;
+    //let line = signal::must_read_stdin()?;
+    let desc_data = signal::decode(&offer_encoded.unwrap())?;
     let offer = serde_json::from_str::<RTCSessionDescription>(&desc_data)?;
     peer_connection.set_remote_description(offer).await?;
     let answer = peer_connection.create_answer(None).await?;
@@ -131,8 +137,12 @@ async fn main() -> Result<()> {
 
     if let Some(local_desc) = peer_connection.local_description().await {
         let json_str = serde_json::to_string(&local_desc)?;
-        let b64 = signal::encode(&json_str);
-        println!("{}", b64);
+        let s = json_str.clone();
+        let b63 = signal::encode(&s);
+        let firebase = Firebase::new("https://rust-signal-default-rtdb.europe-west1.firebasedatabase.app").unwrap().at("messages").at(&identify);
+        let ans: Answer = Answer{answer: b63.clone()};
+        firebase.update(&ans).await.unwrap();
+        println!("{}", b63);
     } else {
         println!("generate local_description failed!");
     }
