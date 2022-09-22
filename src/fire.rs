@@ -1,4 +1,3 @@
-#[allow(unused_variables)]
 use anyhow::Result;
 use clap::{App, Arg, value_t};
 use tokio::time::{sleep, Duration};
@@ -22,15 +21,10 @@ struct Answer {
   answer: String
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-struct Offer {
-    offer: String
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let app = App::new("fire-channel")
-        .version("0.4.2")
+        .version("0.4.1")
         .author("Artur Gwoździowski <gwozdyk@gmail.com>")
         .about("an example of creation p2p data-channel using firebase as signaling")
         .arg(
@@ -42,37 +36,15 @@ async fn main() -> Result<()> {
                 .default_value(&"robocik")
         )
         .get_matches();
-
+        
     let identify = value_t!(app, "IDENT", String).unwrap();
-    println!("device: {}", identify);
-    println!("connecting...");
+    println!("[DEVICE]: {}", identify);
+    sleep(Duration::from_millis(500)).await;
+    println!("[STATE]: initialize...");
     sleep(Duration::from_secs(1)).await;
     let firebase = Firebase::new("https://rust-signal-default-rtdb.europe-west1.firebasedatabase.app")
-                                .unwrap().at("messages").at(&identify).at("offer");
-    let mut offer_ok: bool=false;
-    let mut offer_encoded: String=String::new();
-    println!("waiting for offer...");
-    sleep(Duration::from_secs(1)).await;
-    while !offer_ok {
-        let encod = firebase.get::<String>().await;
-        match encod  {
-            Ok(v) if v != "" => {
-                offer_encoded = v;
-                offer_ok = true;
-                let firebase2 = Firebase::new("https://rust-signal-default-rtdb.europe-west1.firebasedatabase.app")
-                                .unwrap().at("messages").at(&identify);
-                let clear_offer: Offer=Offer { offer: "".to_string() };
-                firebase2.update(&clear_offer).await.unwrap();
-            },
-            Ok(_) => {
-                sleep(Duration::from_secs(3)).await;
-            },
-            Err(_) => {
-                sleep(Duration::from_secs(3)).await;
-            }
-        }
-    }
-
+        .unwrap().at("messages").at(&identify).at("offer");
+    let offer_encoded = firebase.get::<String>().await;
     println!("[OFFER]: OK");
 
     let mut media = MediaEngine::default();
@@ -96,9 +68,23 @@ async fn main() -> Result<()> {
     let peer_connection = Arc::new(api.new_peer_connection(config).await?);
     let (done_tx, mut done_rx) = tokio::sync::mpsc::channel::<()>(1);
 
+    _ = Box::pin(async move {
+        println!("reconnect timer start");
+        loop {
+            let reconnect_time = tokio::time::sleep(Duration::from_secs(5));
+            tokio::pin!(reconnect_time);
+            tokio::select! {
+                _ = reconnect_time.as_mut() => {
+                    println!("reconnect time!");
+                }
+            };
+            ()
+        }
+    }).await;
+
     peer_connection
         .on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
-            println!("CONNECTION STATE: [{}]", s);
+            println!("[STATE]: {}", s);
             if s == RTCPeerConnectionState::Failed {
                 let _ = done_tx.try_send(());
             }
@@ -109,19 +95,19 @@ async fn main() -> Result<()> {
     peer_connection
         .on_data_channel(Box::new(move |d: Arc<RTCDataChannel>| {
             Box::pin(async move {
-                let _d2 = Arc::clone(&d);
+                let d2 = Arc::clone(&d);
                 d.on_open(Box::new(move || {
                     Box::pin(async move {
-                        let result = Result::<usize>::Ok(0);
+                        let mut result = Result::<usize>::Ok(0);
                         while result.is_ok() {
                             let timeout = tokio::time::sleep(Duration::from_secs(5));
                             tokio::pin!(timeout);
 
                             tokio::select! {
                                 _ = timeout.as_mut() => {
-                                    let _message = math_rand_alpha(15);
-                                    //println!("[↑] '{}'", message);
-                                    //result = d2.send_text(message).await.map_err(Into::into);
+                                    let message = math_rand_alpha(15);
+                                    println!("<- '{}'", message);
+                                    result = d2.send_text(message).await.map_err(Into::into);
                                 }
                             };
                         }
@@ -130,14 +116,14 @@ async fn main() -> Result<()> {
 
                 d.on_message(Box::new(move |msg: DataChannelMessage| {
                     let msg_str = String::from_utf8(msg.data.to_vec()).unwrap();
-                    println!("[↓] '{}'", msg_str);
+                    println!("-> '{}'", msg_str);
                     Box::pin(async {})
                 })).await;
             })
         }))
         .await;
 
-    let desc_data = signal::decode(&offer_encoded)?;
+    let desc_data = signal::decode(&offer_encoded.unwrap())?;
     let offer = serde_json::from_str::<RTCSessionDescription>(&desc_data)?;
     peer_connection.set_remote_description(offer).await?;
     let answer = peer_connection.create_answer(None).await?;
